@@ -1,0 +1,10 @@
+.env
+.env.local
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+node_modules/
+.DS_Store
+*.log
+/tmp/
+.claude/

@@ -1,0 +1,136 @@
+name: ${AGENT_ID:-agent-attack}
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis_data:
+  n8n_data:
+  evo_instances:
+
+services:
+  # ─── PostgreSQL (EvolutionAPI backend) ───────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${AGENT_ID:-agent}-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: evolution
+      POSTGRES_USER: evo_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["postgres", "-c", "max_connections=500", "-c", "listen_addresses=*"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evo_user -d evolution"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis (cache + presence state) ──────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ${AGENT_ID:-agent}-redis
+    restart: unless-stopped
+    command: redis-server --port 6379 --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── EvolutionAPI (WhatsApp gateway) ─────────────────────────────────────
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: ${AGENT_ID:-agent}-evolution
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: 8080
+      SERVER_URL: http://evolution:8080
+
+      AUTHENTICATION_API_KEY: ${EVO_API_KEY}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "true"
+
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evo_user:${POSTGRES_PASSWORD}@postgres:5432/evolution?schema=public
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "true"
+
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: ${AGENT_ID:-agent}
+      CACHE_LOCAL_ENABLED: "false"
+
+      CONFIG_SESSION_PHONE_CLIENT: Chrome
+      CONFIG_SESSION_PHONE_NAME: Chrome
+
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_URL: http://n8n:5678/webhook/evolution
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      WEBHOOK_EVENTS_SEND_MESSAGE: "false"
+      WEBHOOK_EVENTS_MESSAGES_UPDATE: "false"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "false"
+      WEBHOOK_EVENTS_QRCODE_UPDATED: "false"
+
+      LOG_LEVEL: ERROR,WARN
+      LOG_BAILEYS: error
+
+      DEL_INSTANCE: "false"
+      QRCODE_LIMIT: "30"
+    volumes:
+      - evo_instances:/evolution/instances
+    networks:
+      - agent-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── n8n (orchestration) ─────────────────────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: ${AGENT_ID:-agent}-n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_ADMIN_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_ADMIN_PASSWORD}
+
+      TZ: America/Sao_Paulo
+      GENERIC_TIMEZONE: America/Sao_Paulo
+
+      NODE_ENV: production
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - agent-net
+    depends_on:
+      - evolution

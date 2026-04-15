@@ -1,0 +1,809 @@
+{
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Webhook Evolution",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "webhookId": "evolution-ana-webhook"
+    },
+    {
+      "id": "extract-data",
+      "name": "Extract WhatsApp Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst event = body.event;\nconst data = body.data;\n\nif (event !== 'messages.upsert') return [];\n\nconst fromMe = data?.key?.fromMe;\nif (fromMe) return [];\n\nconst remoteJid = data?.key?.remoteJid || '';\nif (remoteJid.endsWith('@g.us')) return [];\n\nconst msg = data?.message || {};\nconst text = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '';\n\nif (!text.trim()) return [];\n\nconst phone = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = data?.pushName || '';\nconst messageId = data?.key?.id || '';\nconst timestamp = data?.messageTimestamp ? new Date(data.messageTimestamp * 1000).toISOString() : new Date().toISOString();\n\nreturn [{json: { phone, pushName, messageId, text: text.trim(), timestamp, remoteJid, instance: body.instance || '{{ AGENT_ID }}' }}];"
+      }
+    },
+    {
+      "id": "business-hours-check",
+      "name": "Business Hours Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short', hour: '2-digit', hour12: false });\nconst parts = fmt.formatToParts(now);\nconst weekday = parts.find(p => p.type === 'weekday')?.value || '';\nconst hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');\nconst isWeekday = !['Sat', 'Sun'].includes(weekday);\nconst isBusinessHour = hour >= 8 && hour < 18;\nconst isWithinHours = isWeekday && isBusinessHour;\n\nconst input = $input.first().json;\nreturn [{json: { ...input, within_business_hours: isWithinHours, current_weekday: weekday, current_hour: hour }}];"
+      }
+    },
+    {
+      "id": "if-business-hours",
+      "name": "IF Business Hours",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.within_business_hours }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "log-inbound",
+      "name": "Log Inbound (Sondar+)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $json.phone }}\",\n  \"direction\": \"inbound\",\n  \"content\": {{ JSON.stringify($json.text) }},\n  \"channel\": \"whatsapp\",\n  \"external_message_id\": \"{{ $json.messageId }}\",\n  \"sender_name\": \"{{ $json.pushName }}\",\n  \"sent_at\": \"{{ $json.timestamp }}\"\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "queue-inbound",
+      "name": "Queue (fora horário)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $json.phone }}\",\n  \"direction\": \"inbound\",\n  \"content\": {{ JSON.stringify($json.text) }},\n  \"channel\": \"whatsapp\",\n  \"external_message_id\": \"{{ $json.messageId }}\",\n  \"sender_name\": \"{{ $json.pushName }}\",\n  \"sent_at\": \"{{ $json.timestamp }}\",\n  \"metadata\": { \"queued_business_hours\": true }\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "get-prompt",
+      "name": "Get Active Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "{{ SUPABASE_URL }}/rest/v1/agent_prompts?agent_id=eq.opensquad-ana&is_active=eq.true&select=*&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get-context",
+      "name": "Get Conversation History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_messages?select=direction,content,created_at,opensquad_leads!inner(phone)&opensquad_leads.phone=like.%25{{ $('Extract WhatsApp Data').first().json.phone.slice(-9) }}&order=created_at.desc&limit=20",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build-prompt",
+      "name": "Build Prompt + History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const inbound = $('Business Hours Check').first().json;\nconst promptRow = $('Get Active Prompt').first().json;\nconst historyResp = $('Get Conversation History').first().json;\nconst contextResp = $('Get Lead Context').first().json;\nconst plansResp = $('Get Plans (Tool)').first().json;\nconst accountResp = $('Check Account (Tool)').first().json;\n\nconst history = Array.isArray(historyResp) ? historyResp : (historyResp?.data || []);\nconst ctxArr = Array.isArray(contextResp) ? contextResp : (contextResp?.data || []);\nconst leadCtxRow = ctxArr[0] || {};\nconst leadContext = leadCtxRow.lead_context || {};\nconst stage = leadCtxRow.conversation_stage || 'new';\nconst companyName = leadCtxRow.company_name || '';\nconst decisionMaker = leadCtxRow.decision_maker_name || inbound.pushName || '';\n\nconst systemPrompt = promptRow?.system_prompt || 'Você é uma assistente comercial do Sondar+.';\nconst modelPrimary = promptRow?.model_primary || 'gemini-2.0-flash';\nconst temperature = promptRow?.temperature || 0.4;\nconst maxTokens = promptRow?.max_tokens || 300;\n\nconst historyChronological = history.slice().reverse();\nconst contextLines = historyChronological.map(m => {\n  const role = m.direction === 'outbound' ? 'Ana' : (decisionMaker || 'Cliente');\n  return role + ': ' + m.content;\n}).join('\\n');\n\nconst leadBrief = [\n  decisionMaker ? 'Nome: ' + decisionMaker : null,\n  companyName ? 'Empresa: ' + companyName : null,\n  leadCtxRow.city ? 'Cidade: ' + leadCtxRow.city : null,\n  'Stage: ' + stage,\n  leadContext.persona_fit != null ? 'Persona fit: ' + leadContext.persona_fit + '/100' : null,\n  leadContext.pain_points?.length ? 'Dores detectadas: ' + leadContext.pain_points.join('; ') : null,\n  leadContext.objections?.length ? 'Objeções: ' + leadContext.objections.join('; ') : null,\n  leadContext.signals ? 'Sinais: ' + JSON.stringify(leadContext.signals) : null,\n  leadContext.next_action ? 'Próxima ação sugerida: ' + leadContext.next_action : null,\n  leadContext.last_summary ? 'Resumo: ' + leadContext.last_summary : null,\n].filter(Boolean).join('\\n');\n\n// Tabela de planos direto do DB (fonte da verdade, nada hardcoded)\nlet planosTxt = '';\ntry {\n  const plans = plansResp?.planos || [];\n  planosTxt = plans.map(p => {\n    const limits = p.ilimitado\n      ? 'ilimitado'\n      : [\n          p.max_obras ? p.max_obras + ' obras' : null,\n          p.max_furos ? p.max_furos + ' furos' : null,\n          p.max_usuarios ? p.max_usuarios + ' usuários' : null,\n        ].filter(Boolean).join(' / ');\n    return '- ' + p.nome + ' (R$' + p.preco_brl + '/' + (p.billing || 'mensal') + '): ' + limits;\n  }).join('\\n');\n} catch(e) {}\n\n// Account status\nlet accountTxt = '';\ntry {\n  if (accountResp?.tem_conta) {\n    const c = accountResp.contas?.[0];\n    if (c) {\n      accountTxt = 'JÁ É CLIENTE: ' + c.empresa + ' (' + (c.cidade || '?') + ')';\n      if (c.plano) accountTxt += ', plano ' + c.plano.nome;\n      if (c.assinatura?.trial_ativo) accountTxt += ', trial ativo até ' + c.assinatura.trial_termina_em;\n    }\n  } else {\n    accountTxt = 'AINDA NÃO É CLIENTE (lead novo, sem cadastro no Sondar+)';\n  }\n} catch(e) {}\n\nconst userMessage = (decisionMaker || 'Cliente') + ' (' + inbound.phone + ') escreveu agora:\\n\\n' + inbound.text;\n\nconst parts = [];\nif (leadBrief) parts.push('PERFIL DO LEAD:\\n' + leadBrief);\nif (accountTxt) parts.push('STATUS DE CONTA:\\n' + accountTxt);\nif (planosTxt) parts.push('PLANOS ATIVOS (fonte oficial, use SEMPRE esses valores):\\n' + planosTxt);\nif (contextLines) parts.push('HISTÓRICO RECENTE DA CONVERSA:\\n' + contextLines);\nparts.push('NOVA MENSAGEM:\\n' + userMessage);\nconst fullContext = parts.join('\\n\\n---\\n\\n');\n\nreturn [{json: {\n  phone: inbound.phone,\n  pushName: decisionMaker,\n  messageId: inbound.messageId,\n  lead_id: leadCtxRow.id,\n  system_prompt: systemPrompt,\n  user_message: fullContext,\n  model: modelPrimary,\n  temperature,\n  max_tokens: maxTokens\n}}];"
+      }
+    },
+    {
+      "id": "gemini-call",
+      "name": "Gemini AI Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.model }}:generateContent?key={{ GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.user_message) }} }]\n  }],\n  \"systemInstruction\": {\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.system_prompt) }} }]\n  },\n  \"generationConfig\": {\n    \"temperature\": {{ $json.temperature }},\n    \"maxOutputTokens\": {{ $json.max_tokens }}\n  }\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "extract-response",
+      "name": "Extract AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const geminiResp = $input.first().json;\nconst inbound = $('Build Prompt + History').first().json;\n\nlet aiText = '';\ntry {\n  aiText = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n} catch (e) {}\n\n// Parse escalation marker: <<ESCALAR:reason:summary>>\nlet escalation = null;\nconst escMatch = aiText.match(/<<ESCALAR:([a-z_]+):([^>]+)>>/i);\nif (escMatch) {\n  escalation = {\n    reason: escMatch[1].toLowerCase(),\n    summary: escMatch[2].trim()\n  };\n  aiText = aiText.replace(escMatch[0], '').trim();\n}\n\n// Sanitize\naiText = aiText.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\naiText = aiText.replace(/<\\/?final>/gi, '').trim();\naiText = aiText.replace(/^Ana:\\s*/i, '').trim();\naiText = aiText.replace(/```[\\s\\S]*?```/g, '').trim();\n\nif (!aiText) aiText = 'Oi! Só um momento, já te respondo.';\n\nconst textLen = aiText.length;\nconst delay_ms = Math.min(Math.max(textLen * 60 + 800, 2000), 12000);\n\nreturn [{json: {\n  phone: inbound.phone,\n  messageId: inbound.messageId,\n  lead_id: inbound.lead_id,\n  ai_text: aiText,\n  delay_ms,\n  text_length: textLen,\n  delay_seconds: Math.floor(delay_ms / 1000),\n  escalation_reason: escalation?.reason || null,\n  escalation_summary: escalation?.summary || null,\n  should_escalate: escalation !== null\n}}];"
+      }
+    },
+    {
+      "id": "send-typing",
+      "name": "Send Typing Presence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/chat/sendPresence/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"presence\": \"composing\",\n  \"delay\": 25000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "wait-delay",
+      "name": "Wait Typing Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1840,
+        0
+      ],
+      "parameters": {
+        "amount": "={{ $('Extract AI Response').first().json.delay_seconds }}",
+        "unit": "seconds"
+      },
+      "webhookId": "fab9c538-8f11-4994-b6c6-4650ef8fef5c"
+    },
+    {
+      "id": "send-msg",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2080,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"text\": {{ JSON.stringify($('Extract AI Response').first().json.ai_text) }},\n  \"delay\": 1000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "log-outbound",
+      "name": "Log Outbound (Sondar+)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Extract AI Response').first().json.ai_text) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"reply\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "get-lead-context",
+      "name": "Get Lead Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -200
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_leads?select=id,conversation_stage,lead_context,company_name,city,decision_maker_name&phone=like.%25{{ $('Extract WhatsApp Data').first().json.phone.slice(-9) }}&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-escalate",
+      "name": "IF Should Escalate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "esc-cond",
+              "leftValue": "={{ $('Extract AI Response').first().json.should_escalate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "open-ticket",
+      "name": "Open Ticket (Sondar+)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        -150
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/open-ticket",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"reason\": \"{{ $('Extract AI Response').first().json.escalation_reason }}\",\n  \"summary\": {{ JSON.stringify($('Extract AI Response').first().json.escalation_summary) }}\n}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "update-context",
+      "name": "Update Lead Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        150
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/update-context",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\"\n}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "get-plans-tool",
+      "name": "Get Plans (Tool)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -400
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "{{ BACKEND_BASE_URL }}/api/agents/ana/tools/get-plans",
+        "options": {
+          "timeout": 8000
+        }
+      }
+    },
+    {
+      "id": "check-account-tool",
+      "name": "Check Account (Tool)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -600
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/agents/ana/tools/check-lead-account",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Extract WhatsApp Data').first().json.phone }}\"\n}",
+        "options": {
+          "timeout": 8000
+        }
+      }
+    },
+    {
+      "id": "compute-schedule",
+      "name": "Compute Next Business 9h",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const inbound = $('Extract WhatsApp Data').first().json;\n\n// Timezone America/Sao_Paulo\nfunction nowInBrasilia() {\n  const now = new Date();\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: 'America/Sao_Paulo',\n    year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short'\n  }).formatToParts(now);\n  const get = (t) => parts.find(p => p.type === t)?.value;\n  return {\n    weekday: get('weekday'), // Sun, Mon, ...\n    hour: parseInt(get('hour') || '0'),\n    year: parseInt(get('year')),\n    month: parseInt(get('month')),\n    day: parseInt(get('day'))\n  };\n}\n\nfunction nextBusinessDay9h() {\n  const b = nowInBrasilia();\n  const WEEKDAY_NUM = {Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6};\n  let dow = WEEKDAY_NUM[b.weekday];\n  const isBusinessDay = (dow >= 1 && dow <= 5);\n  const hour = b.hour;\n\n  // Same day if: é dia útil E ainda antes das 8h\n  if (isBusinessDay && hour < 8) {\n    const iso = new Date(Date.UTC(b.year, b.month - 1, b.day, 12, 0, 0)).toISOString();\n    // 9h Brasília = 12h UTC (GMT-3)\n    return iso;\n  }\n\n  // Senão: próximo dia útil\n  let daysToAdd = 1;\n  let testDow = (dow + daysToAdd) % 7;\n  while (testDow === 0 || testDow === 6) {\n    daysToAdd++;\n    testDow = (dow + daysToAdd) % 7;\n  }\n\n  const target = new Date(Date.UTC(b.year, b.month - 1, b.day, 12, 0, 0));\n  target.setUTCDate(target.getUTCDate() + daysToAdd);\n  return target.toISOString();\n}\n\nconst scheduled_for = nextBusinessDay9h();\n\nreturn [{json: {\n  ...inbound,\n  scheduled_for,\n  queue_message_type: 'reply_pending',\n  queue_content: inbound.text\n}}];"
+      }
+    },
+    {
+      "id": "find-lead-for-queue",
+      "name": "Find Lead For Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_leads?select=id&phone=like.%25{{ $('Extract WhatsApp Data').first().json.phone.slice(-9) }}&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 8000
+        }
+      }
+    },
+    {
+      "id": "insert-queue",
+      "name": "Insert Off-Hours Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ SUPABASE_URL }}/rest/v1/opensquad_outbound_queue",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            },
+            {
+              "name": "Content-Profile",
+              "value": "public"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ ($('Find Lead For Queue').first().json[0] || {}).id }}\",\n  \"phone\": \"{{ $('Extract WhatsApp Data').first().json.phone }}\",\n  \"message_type\": \"reply_pending\",\n  \"content\": {{ JSON.stringify($('Extract WhatsApp Data').first().json.text) }},\n  \"scheduled_for\": \"{{ $('Compute Next Business 9h').first().json.scheduled_for }}\",\n  \"priority\": 4,\n  \"status\": \"pending\",\n  \"metadata\": {\n    \"inbound_message_id\": \"{{ $('Extract WhatsApp Data').first().json.messageId }}\",\n    \"pushName\": \"{{ $('Extract WhatsApp Data').first().json.pushName }}\",\n    \"received_at\": \"{{ $('Extract WhatsApp Data').first().json.timestamp }}\"\n  }\n}",
+        "options": {
+          "timeout": 8000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Evolution": {
+      "main": [
+        [
+          {
+            "node": "Extract WhatsApp Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract WhatsApp Data": {
+      "main": [
+        [
+          {
+            "node": "Business Hours Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Business Hours Check": {
+      "main": [
+        [
+          {
+            "node": "IF Business Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Business Hours": {
+      "main": [
+        [
+          {
+            "node": "Log Inbound (Sondar+)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue (fora horário)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Inbound (Sondar+)": {
+      "main": [
+        [
+          {
+            "node": "Get Active Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Prompt": {
+      "main": [
+        [
+          {
+            "node": "Get Conversation History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Conversation History": {
+      "main": [
+        [
+          {
+            "node": "Get Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt + History": {
+      "main": [
+        [
+          {
+            "node": "Gemini AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini AI Response": {
+      "main": [
+        [
+          {
+            "node": "Extract AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract AI Response": {
+      "main": [
+        [
+          {
+            "node": "Send Typing Presence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Typing Presence": {
+      "main": [
+        [
+          {
+            "node": "Wait Typing Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Typing Delay": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Log Outbound (Sondar+)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lead Context": {
+      "main": [
+        [
+          {
+            "node": "Get Plans (Tool)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Outbound (Sondar+)": {
+      "main": [
+        [
+          {
+            "node": "IF Should Escalate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Escalate": {
+      "main": [
+        [
+          {
+            "node": "Open Ticket (Sondar+)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open Ticket (Sondar+)": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Plans (Tool)": {
+      "main": [
+        [
+          {
+            "node": "Check Account (Tool)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Account (Tool)": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt + History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue (fora horário)": {
+      "main": [
+        [
+          {
+            "node": "Compute Next Business 9h",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Next Business 9h": {
+      "main": [
+        [
+          {
+            "node": "Find Lead For Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Lead For Queue": {
+      "main": [
+        [
+          {
+            "node": "Insert Off-Hours Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

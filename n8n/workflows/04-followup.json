@@ -1,0 +1,6 @@
+{
+  "name": "Ana — Follow-up (D+2, D+7)",
+  "_comment": "TODO: workflow placeholder — rodar cron diário 10h, buscar leads em status=contacted sem resposta há 48h (followup_1) ou 7d (followup_2), enviar msg de reengajamento. Seguir mesmo padrão de Dispatcher.",
+  "nodes": [],
+  "connections": {}
+}

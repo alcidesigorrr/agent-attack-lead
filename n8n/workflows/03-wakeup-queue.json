@@ -1,0 +1,309 @@
+{
+  "name": "Ana — Wake-up Queue",
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": true
+  },
+  "nodes": [
+    {
+      "id": "schedule-9h",
+      "name": "Schedule 9h Seg-Sex",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-800, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {"field": "cronExpression", "expression": "0 9 * * 1-5"}
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-due-queue",
+      "name": "Fetch Due Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-560, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_outbound_queue?select=id,lead_id,phone,message_type,content,metadata,scheduled_for&status=eq.pending&scheduled_for=lte.{{ $now.toISO() }}&order=scheduled_for.asc,priority.asc&limit=20",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Accept-Profile", "value": "public"}
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "split-queue",
+      "name": "Split Queue Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-320, 0],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "mark-processing",
+      "name": "Mark Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-80, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_outbound_queue?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Content-Profile", "value": "public"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"processing\",\n  \"attempts\": 1\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "get-prompt",
+      "name": "Get Active Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [160, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "{{ SUPABASE_URL }}/rest/v1/agent_prompts?select=system_prompt,model_primary,temperature,max_tokens&agent_id=eq.opensquad-ana&is_active=eq.true&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Accept-Profile", "value": "public"}
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get-history",
+      "name": "Get History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_messages?select=direction,content,created_at&lead_id=eq.{{ $('Split Queue Items').first().json.lead_id }}&order=created_at.desc&limit=20",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Accept-Profile", "value": "public"}
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get-lead-context",
+      "name": "Get Lead Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_leads?select=id,conversation_stage,lead_context,company_name,city,decision_maker_name&id=eq.{{ $('Split Queue Items').first().json.lead_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Accept-Profile", "value": "public"}
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get-plans",
+      "name": "Get Plans (Tool)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "{{ BACKEND_BASE_URL }}/api/agents/ana/tools/get-plans",
+        "options": {"timeout": 8000}
+      }
+    },
+    {
+      "id": "build-wakeup-prompt",
+      "name": "Build Wake-up Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 0],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const queue = $('Split Queue Items').first().json;\nconst promptRow = ($('Get Active Prompt').first().json?.[0]) || $('Get Active Prompt').first().json;\nconst historyResp = $('Get History').first().json;\nconst ctxArr = $('Get Lead Context').first().json;\nconst plansResp = $('Get Plans (Tool)').first().json;\n\nconst history = Array.isArray(historyResp) ? historyResp : (historyResp?.data || []);\nconst leadCtxRow = Array.isArray(ctxArr) ? (ctxArr[0] || {}) : ctxArr;\nconst leadContext = leadCtxRow?.lead_context || {};\nconst stage = leadCtxRow?.conversation_stage || 'new';\nconst decisionMaker = leadCtxRow?.decision_maker_name || queue.metadata?.pushName || '';\nconst receivedAt = queue.metadata?.received_at || queue.scheduled_for;\n\nconst systemPrompt = promptRow?.system_prompt || 'Você é Ana do Sondar+.';\nconst modelPrimary = promptRow?.model_primary || 'gemini-2.0-flash';\nconst temperature = promptRow?.temperature || 0.4;\nconst maxTokens = promptRow?.max_tokens || 500;\n\nconst historyChronological = history.slice().reverse();\nconst contextLines = historyChronological.map(m => {\n  const role = m.direction === 'outbound' ? 'Ana' : (decisionMaker || 'Cliente');\n  return role + ': ' + m.content;\n}).join('\\n');\n\nconst leadBrief = [\n  decisionMaker ? 'Nome: ' + decisionMaker : null,\n  leadCtxRow?.company_name ? 'Empresa: ' + leadCtxRow.company_name : null,\n  leadCtxRow?.city ? 'Cidade: ' + leadCtxRow.city : null,\n  'Stage: ' + stage,\n  leadContext.pain_points?.length ? 'Dores detectadas: ' + leadContext.pain_points.join('; ') : null,\n  leadContext.objections?.length ? 'Objeções: ' + leadContext.objections.join('; ') : null,\n  leadContext.signals ? 'Sinais: ' + JSON.stringify(leadContext.signals) : null,\n  leadContext.last_summary ? 'Resumo: ' + leadContext.last_summary : null\n].filter(Boolean).join('\\n');\n\nlet planosTxt = '';\ntry {\n  const plans = plansResp?.planos || [];\n  planosTxt = plans.map(p => {\n    const limits = p.ilimitado ? 'ilimitado' : [p.max_obras ? p.max_obras + ' obras' : null, p.max_furos ? p.max_furos + ' furos' : null, p.max_usuarios ? p.max_usuarios + ' usuários' : null].filter(Boolean).join(' / ');\n    return '- ' + p.nome + ' (R$' + p.preco_brl + '): ' + limits;\n  }).join('\\n');\n} catch(e) {}\n\n// Formato de hora amigável pra explicar o delay\nconst receivedDate = new Date(receivedAt);\nconst agora = new Date();\nconst diffMs = agora - receivedDate;\nconst diffHours = Math.floor(diffMs / (1000 * 60 * 60));\nlet delayTxt = '';\nif (diffHours < 12) delayTxt = 'ontem à noite';\nelse if (diffHours < 24) delayTxt = 'ontem';\nelse if (diffHours < 48) delayTxt = 'anteontem';\nelse delayTxt = 'no fim de semana';\n\nconst userMessage = 'CONTEXTO ESPECIAL: ' + (decisionMaker || 'O cliente') + ' escreveu ' + delayTxt + ', fora do horário comercial. Agora é segunda/dia útil 9h e você está respondendo pela 1ª vez.\\n\\nA mensagem que ele mandou foi:\\n\"' + queue.content + '\"\\n\\nINSTRUÇÕES:\\n1. Cumprimente mencionando que viu a msg dele\\n2. Responda o que ele perguntou usando o contexto\\n3. Seja natural, tipo \"Oi João, bom dia! Vi sua msg de ' + delayTxt + '. Sobre o que você perguntou...\"';\n\nconst parts = [];\nif (leadBrief) parts.push('PERFIL DO LEAD:\\n' + leadBrief);\nif (planosTxt) parts.push('PLANOS ATIVOS (fonte oficial):\\n' + planosTxt);\nif (contextLines) parts.push('HISTÓRICO RECENTE:\\n' + contextLines);\nparts.push(userMessage);\nconst fullContext = parts.join('\\n\\n---\\n\\n');\n\nreturn [{json: {\n  queue_id: queue.id,\n  phone: queue.phone,\n  pushName: decisionMaker,\n  lead_id: queue.lead_id,\n  system_prompt: systemPrompt,\n  user_message: fullContext,\n  model: modelPrimary,\n  temperature,\n  max_tokens: maxTokens\n}}];"
+      }
+    },
+    {
+      "id": "gemini-call",
+      "name": "Gemini AI Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.model }}:generateContent?key={{ GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"system_instruction\": {\"parts\": [{\"text\": {{ JSON.stringify($json.system_prompt) }} }]},\n  \"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": {{ JSON.stringify($json.user_message) }} }]}],\n  \"generationConfig\": {\n    \"temperature\": {{ $json.temperature }},\n    \"maxOutputTokens\": {{ $json.max_tokens }}\n  }\n}",
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "extract-ai",
+      "name": "Extract AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 0],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const geminiResp = $input.first().json;\nconst inbound = $('Build Wake-up Prompt').first().json;\n\nlet aiText = '';\ntry { aiText = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || ''; } catch(e) {}\n\nlet escalation = null;\nconst escMatch = aiText.match(/<<ESCALAR:([a-z_]+):([^>]+)>>/i);\nif (escMatch) {\n  escalation = { reason: escMatch[1].toLowerCase(), summary: escMatch[2].trim() };\n  aiText = aiText.replace(escMatch[0], '').trim();\n}\n\naiText = aiText.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\naiText = aiText.replace(/<\\/?final>/gi, '').trim();\naiText = aiText.replace(/^Ana:\\s*/i, '').trim();\naiText = aiText.replace(/```[\\s\\S]*?```/g, '').trim();\n\nif (!aiText) aiText = 'Oi! Vi sua mensagem. Vou já te responder, só um momento.';\n\nconst textLen = aiText.length;\nconst delay_ms = Math.min(Math.max(textLen * 60 + 1200, 3000), 15000);\n\nreturn [{json: {\n  queue_id: inbound.queue_id,\n  phone: inbound.phone,\n  lead_id: inbound.lead_id,\n  ai_text: aiText,\n  delay_seconds: Math.floor(delay_ms / 1000),\n  escalation_reason: escalation?.reason || null,\n  escalation_summary: escalation?.summary || null,\n  should_escalate: escalation !== null\n}}];"
+      }
+    },
+    {
+      "id": "send-typing",
+      "name": "Send Typing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1840, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/chat/sendPresence/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.phone }}\",\n  \"presence\": \"composing\",\n  \"delay\": 25000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {"id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID", "name": "Evolution API - Sondar Ana"}
+      }
+    },
+    {
+      "id": "wait-typing",
+      "name": "Wait Typing",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2080, 0],
+      "parameters": {
+        "amount": "={{ $('Extract AI Response').first().json.delay_seconds }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "send-message",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2320, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"text\": {{ JSON.stringify($('Extract AI Response').first().json.ai_text) }},\n  \"delay\": 1000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {"id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID", "name": "Evolution API - Sondar Ana"}
+      }
+    },
+    {
+      "id": "log-outbound",
+      "name": "Log Outbound (Sondar+)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2560, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Extract AI Response').first().json.ai_text) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"reply\",\n  \"sent_at\": \"{{ $now.toISO() }}\",\n  \"metadata\": { \"wakeup_queue_id\": \"{{ $('Extract AI Response').first().json.queue_id }}\" }\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "mark-sent",
+      "name": "Mark Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2800, 0],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_outbound_queue?id=eq.{{ $('Extract AI Response').first().json.queue_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
+            {"name": "Content-Profile", "value": "public"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"sent\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
+        "options": {}
+      }
+    },
+    {
+      "id": "wait-between",
+      "name": "Wait 20-40s Between",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3040, 0],
+      "parameters": {
+        "amount": "={{ Math.floor(Math.random() * 20) + 20 }}",
+        "unit": "seconds"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 9h Seg-Sex": {"main": [[{"node": "Fetch Due Queue", "type": "main", "index": 0}]]},
+    "Fetch Due Queue": {"main": [[{"node": "Split Queue Items", "type": "main", "index": 0}]]},
+    "Split Queue Items": {"main": [[{"node": "Mark Processing", "type": "main", "index": 0}]]},
+    "Mark Processing": {"main": [[{"node": "Get Active Prompt", "type": "main", "index": 0}]]},
+    "Get Active Prompt": {"main": [[{"node": "Get History", "type": "main", "index": 0}]]},
+    "Get History": {"main": [[{"node": "Get Lead Context", "type": "main", "index": 0}]]},
+    "Get Lead Context": {"main": [[{"node": "Get Plans (Tool)", "type": "main", "index": 0}]]},
+    "Get Plans (Tool)": {"main": [[{"node": "Build Wake-up Prompt", "type": "main", "index": 0}]]},
+    "Build Wake-up Prompt": {"main": [[{"node": "Gemini AI Response", "type": "main", "index": 0}]]},
+    "Gemini AI Response": {"main": [[{"node": "Extract AI Response", "type": "main", "index": 0}]]},
+    "Extract AI Response": {"main": [[{"node": "Send Typing", "type": "main", "index": 0}]]},
+    "Send Typing": {"main": [[{"node": "Wait Typing", "type": "main", "index": 0}]]},
+    "Wait Typing": {"main": [[{"node": "Send WhatsApp Message", "type": "main", "index": 0}]]},
+    "Send WhatsApp Message": {"main": [[{"node": "Log Outbound (Sondar+)", "type": "main", "index": 0}]]},
+    "Log Outbound (Sondar+)": {"main": [[{"node": "Mark Sent", "type": "main", "index": 0}]]},
+    "Mark Sent": {"main": [[{"node": "Wait 20-40s Between", "type": "main", "index": 0}]]},
+    "Wait 20-40s Between": {"main": [[{"node": "Split Queue Items", "type": "main", "index": 0}]]}
+  }
+}
