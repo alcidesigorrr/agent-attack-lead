@@ -1,11 +1,3 @@
-// ============================================================================
-// PORTABILIDADE: Este arquivo foi gerado como template do agent-attack-lead.
-// Para usar no seu Next.js:
-//   1. Copie para src/app/api/<path>/route.ts no seu projeto
-//   2. Substitua `@/lib/supabase-admin` pela sua função de DB
-//   3. Ajuste nomes de tabelas/colunas se usar schema diferente de opensquad_*
-// ============================================================================
-
 /**
  * POST /api/agents/ana/tools/recommend-plan
  *
@@ -21,16 +13,15 @@
  */
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/supabase-admin";
+import { requireWebhookAuth } from "@/lib/opensquad/webhook-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SECRET = process.env.OPENCLAW_WEBHOOK_SECRET;
 
 export const POST = async (req: Request) => {
-  if (SECRET && req.headers.get("x-webhook-secret") !== SECRET) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+    const authErr = requireWebhookAuth(req);
+    if (authErr) return authErr;
 
   const body = (await req.json().catch(() => ({}))) as {
     monthly_reports?: number;

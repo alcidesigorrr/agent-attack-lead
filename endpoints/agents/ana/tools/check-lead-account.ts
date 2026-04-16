@@ -1,11 +1,3 @@
-// ============================================================================
-// PORTABILIDADE: Este arquivo foi gerado como template do agent-attack-lead.
-// Para usar no seu Next.js:
-//   1. Copie para src/app/api/<path>/route.ts no seu projeto
-//   2. Substitua `@/lib/supabase-admin` pela sua função de DB
-//   3. Ajuste nomes de tabelas/colunas se usar schema diferente de opensquad_*
-// ============================================================================
-
 /**
  * POST /api/agents/ana/tools/check-lead-account
  *
@@ -18,20 +10,19 @@
  */
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/supabase-admin";
+import { requireWebhookAuth } from "@/lib/opensquad/webhook-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SECRET = process.env.OPENCLAW_WEBHOOK_SECRET;
 
 function phoneLast8(raw: string): string {
   return raw.replace(/\D/g, "").slice(-8);
 }
 
 export const POST = async (req: Request) => {
-  if (SECRET && req.headers.get("x-webhook-secret") !== SECRET) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+    const authErr = requireWebhookAuth(req);
+    if (authErr) return authErr;
 
   const body = (await req.json().catch(() => ({}))) as { phone?: string };
   if (!body.phone) {
@@ -91,28 +82,12 @@ export const POST = async (req: Request) => {
 
     return {
       empresa: c.name,
-      email_owner: c.owner_email,
-      cidade: c.city,
-      uf: c.state,
       status_empresa: c.status,
-      plano: plan
-        ? {
-            nome: plan.name,
-            slug: plan.slug,
-            intervalo: plan.interval,
-            limites: {
-              max_obras: plan.max_projects,
-              max_furos: plan.max_boreholes,
-              max_usuarios: plan.max_users,
-            },
-          }
-        : null,
+      plano: plan ? { nome: plan.name, slug: plan.slug } : null,
       assinatura: sub
         ? {
             status: sub.status,
-            proximo_vencimento: sub.current_period_end,
             trial_ativo: trialActive,
-            trial_termina_em: trialEnd?.toISOString() || null,
           }
         : null,
     };

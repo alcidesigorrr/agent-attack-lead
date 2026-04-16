@@ -1,11 +1,3 @@
-// ============================================================================
-// PORTABILIDADE: Este arquivo foi gerado como template do agent-attack-lead.
-// Para usar no seu Next.js:
-//   1. Copie para src/app/api/<path>/route.ts no seu projeto
-//   2. Substitua `@/lib/supabase-admin` pela sua função de DB
-//   3. Ajuste nomes de tabelas/colunas se usar schema diferente de opensquad_*
-// ============================================================================
-
 /**
  * POST /api/webhooks/opensquad/open-ticket
  *
@@ -29,11 +21,11 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/supabase-admin";
 import { normalizePhone } from "@/lib/opensquad/db";
+import { requireWebhookAuth } from "@/lib/opensquad/webhook-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SECRET = process.env.OPENCLAW_WEBHOOK_SECRET;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHANNEL_ID;
 
@@ -86,12 +78,8 @@ async function notifyTelegram(text: string): Promise<void> {
 
 export const POST = async (req: Request) => {
   try {
-    if (SECRET) {
-      const provided = req.headers.get("x-webhook-secret");
-      if (provided !== SECRET) {
-        return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-      }
-    }
+    const authErr = requireWebhookAuth(req);
+    if (authErr) return authErr;
 
     const body = await req.json();
     const { phone, reason, summary, urgency } = body as {

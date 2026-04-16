@@ -1,4 +1,5 @@
 {
+  "name": "Ana — Handler Inbound",
   "nodes": [
     {
       "id": "webhook-trigger",
@@ -28,7 +29,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst event = body.event;\nconst data = body.data;\n\nif (event !== 'messages.upsert') return [];\n\nconst fromMe = data?.key?.fromMe;\nif (fromMe) return [];\n\nconst remoteJid = data?.key?.remoteJid || '';\nif (remoteJid.endsWith('@g.us')) return [];\n\nconst msg = data?.message || {};\nconst text = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '';\n\nif (!text.trim()) return [];\n\nconst phone = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = data?.pushName || '';\nconst messageId = data?.key?.id || '';\nconst timestamp = data?.messageTimestamp ? new Date(data.messageTimestamp * 1000).toISOString() : new Date().toISOString();\n\nreturn [{json: { phone, pushName, messageId, text: text.trim(), timestamp, remoteJid, instance: body.instance || '{{ AGENT_ID }}' }}];"
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst event = body.event;\nconst data = body.data;\n\nif (event !== 'messages.upsert') return [];\n\nconst fromMe = data?.key?.fromMe;\nif (fromMe) return [];\n\nconst remoteJid = data?.key?.remoteJid || '';\nif (remoteJid.endsWith('@g.us')) return [];\n\nconst msg = data?.message || {};\nconst text = msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || msg.videoMessage?.caption || '';\n\n// Detect audio (voice message or audio file)\nconst isAudio = !!(msg.audioMessage || msg.pttMessage);\nconst audioMessageId = data?.key?.id || '';\n\n// If no text AND no audio, skip\nif (!text.trim() && !isAudio) return [];\n\nconst phone = remoteJid.replace('@s.whatsapp.net', '').replace('@c.us', '');\nconst pushName = data?.pushName || '';\nconst messageId = data?.key?.id || '';\nconst timestamp = data?.messageTimestamp ? new Date(data.messageTimestamp * 1000).toISOString() : new Date().toISOString();\n\nreturn [{json: {\n  phone,\n  pushName,\n  messageId,\n  text: text.trim(),\n  timestamp,\n  remoteJid,\n  instance: body.instance || '{{ AGENT_ID }}',\n  isAudio,\n  audioMessageId\n}}];"
       }
     },
     {
@@ -42,7 +43,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short', hour: '2-digit', hour12: false });\nconst parts = fmt.formatToParts(now);\nconst weekday = parts.find(p => p.type === 'weekday')?.value || '';\nconst hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');\nconst isWeekday = !['Sat', 'Sun'].includes(weekday);\nconst isBusinessHour = hour >= 8 && hour < 18;\nconst isWithinHours = isWeekday && isBusinessHour;\n\nconst input = $input.first().json;\nreturn [{json: { ...input, within_business_hours: isWithinHours, current_weekday: weekday, current_hour: hour }}];"
+        "jsCode": "const now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short', hour: '2-digit', hour12: false });\nconst parts = fmt.formatToParts(now);\nconst weekday = parts.find(p => p.type === 'weekday')?.value || '';\nconst hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');\nconst isWeekday = !['Sat', 'Sun'].includes(weekday);\nconst isBusinessHour = hour >= 8 && hour < 19;\nconst isWithinHours = isWeekday && isBusinessHour;\n\nconst input = $input.first().json;\nreturn [{json: { ...input, within_business_hours: isWithinHours, current_weekday: weekday, current_hour: hour }}];"
       }
     },
     {
@@ -92,7 +93,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"phone\": \"{{ $json.phone }}\",\n  \"direction\": \"inbound\",\n  \"content\": {{ JSON.stringify($json.text) }},\n  \"channel\": \"whatsapp\",\n  \"external_message_id\": \"{{ $json.messageId }}\",\n  \"sender_name\": \"{{ $json.pushName }}\",\n  \"sent_at\": \"{{ $json.timestamp }}\"\n}",
-        "options": {}
+        "options": {},
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -110,7 +120,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"phone\": \"{{ $json.phone }}\",\n  \"direction\": \"inbound\",\n  \"content\": {{ JSON.stringify($json.text) }},\n  \"channel\": \"whatsapp\",\n  \"external_message_id\": \"{{ $json.messageId }}\",\n  \"sender_name\": \"{{ $json.pushName }}\",\n  \"sent_at\": \"{{ $json.timestamp }}\",\n  \"metadata\": { \"queued_business_hours\": true }\n}",
-        "options": {}
+        "options": {},
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -188,12 +207,12 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const inbound = $('Business Hours Check').first().json;\nconst promptRow = $('Get Active Prompt').first().json;\nconst historyResp = $('Get Conversation History').first().json;\nconst contextResp = $('Get Lead Context').first().json;\nconst plansResp = $('Get Plans (Tool)').first().json;\nconst accountResp = $('Check Account (Tool)').first().json;\n\nconst history = Array.isArray(historyResp) ? historyResp : (historyResp?.data || []);\nconst ctxArr = Array.isArray(contextResp) ? contextResp : (contextResp?.data || []);\nconst leadCtxRow = ctxArr[0] || {};\nconst leadContext = leadCtxRow.lead_context || {};\nconst stage = leadCtxRow.conversation_stage || 'new';\nconst companyName = leadCtxRow.company_name || '';\nconst decisionMaker = leadCtxRow.decision_maker_name || inbound.pushName || '';\n\nconst systemPrompt = promptRow?.system_prompt || 'Você é uma assistente comercial do Sondar+.';\nconst modelPrimary = promptRow?.model_primary || 'gemini-2.0-flash';\nconst temperature = promptRow?.temperature || 0.4;\nconst maxTokens = promptRow?.max_tokens || 300;\n\nconst historyChronological = history.slice().reverse();\nconst contextLines = historyChronological.map(m => {\n  const role = m.direction === 'outbound' ? 'Ana' : (decisionMaker || 'Cliente');\n  return role + ': ' + m.content;\n}).join('\\n');\n\nconst leadBrief = [\n  decisionMaker ? 'Nome: ' + decisionMaker : null,\n  companyName ? 'Empresa: ' + companyName : null,\n  leadCtxRow.city ? 'Cidade: ' + leadCtxRow.city : null,\n  'Stage: ' + stage,\n  leadContext.persona_fit != null ? 'Persona fit: ' + leadContext.persona_fit + '/100' : null,\n  leadContext.pain_points?.length ? 'Dores detectadas: ' + leadContext.pain_points.join('; ') : null,\n  leadContext.objections?.length ? 'Objeções: ' + leadContext.objections.join('; ') : null,\n  leadContext.signals ? 'Sinais: ' + JSON.stringify(leadContext.signals) : null,\n  leadContext.next_action ? 'Próxima ação sugerida: ' + leadContext.next_action : null,\n  leadContext.last_summary ? 'Resumo: ' + leadContext.last_summary : null,\n].filter(Boolean).join('\\n');\n\n// Tabela de planos direto do DB (fonte da verdade, nada hardcoded)\nlet planosTxt = '';\ntry {\n  const plans = plansResp?.planos || [];\n  planosTxt = plans.map(p => {\n    const limits = p.ilimitado\n      ? 'ilimitado'\n      : [\n          p.max_obras ? p.max_obras + ' obras' : null,\n          p.max_furos ? p.max_furos + ' furos' : null,\n          p.max_usuarios ? p.max_usuarios + ' usuários' : null,\n        ].filter(Boolean).join(' / ');\n    return '- ' + p.nome + ' (R$' + p.preco_brl + '/' + (p.billing || 'mensal') + '): ' + limits;\n  }).join('\\n');\n} catch(e) {}\n\n// Account status\nlet accountTxt = '';\ntry {\n  if (accountResp?.tem_conta) {\n    const c = accountResp.contas?.[0];\n    if (c) {\n      accountTxt = 'JÁ É CLIENTE: ' + c.empresa + ' (' + (c.cidade || '?') + ')';\n      if (c.plano) accountTxt += ', plano ' + c.plano.nome;\n      if (c.assinatura?.trial_ativo) accountTxt += ', trial ativo até ' + c.assinatura.trial_termina_em;\n    }\n  } else {\n    accountTxt = 'AINDA NÃO É CLIENTE (lead novo, sem cadastro no Sondar+)';\n  }\n} catch(e) {}\n\nconst userMessage = (decisionMaker || 'Cliente') + ' (' + inbound.phone + ') escreveu agora:\\n\\n' + inbound.text;\n\nconst parts = [];\nif (leadBrief) parts.push('PERFIL DO LEAD:\\n' + leadBrief);\nif (accountTxt) parts.push('STATUS DE CONTA:\\n' + accountTxt);\nif (planosTxt) parts.push('PLANOS ATIVOS (fonte oficial, use SEMPRE esses valores):\\n' + planosTxt);\nif (contextLines) parts.push('HISTÓRICO RECENTE DA CONVERSA:\\n' + contextLines);\nparts.push('NOVA MENSAGEM:\\n' + userMessage);\nconst fullContext = parts.join('\\n\\n---\\n\\n');\n\nreturn [{json: {\n  phone: inbound.phone,\n  pushName: decisionMaker,\n  messageId: inbound.messageId,\n  lead_id: leadCtxRow.id,\n  system_prompt: systemPrompt,\n  user_message: fullContext,\n  model: modelPrimary,\n  temperature,\n  max_tokens: maxTokens\n}}];"
+        "jsCode": "const inbound = $('Business Hours Check').first().json;\nconst promptRow = $('Get Active Prompt').first().json;\nconst historyResp = $('Get Conversation History').all().map(i => i.json);\nconst contextResp = $('Get Lead Context').all().map(i => i.json);\nconst plansResp = $('Get Plans (Tool)').first().json;\nconst accountResp = $('Check Account (Tool)').first().json;\n\nconst history = historyResp;\nconst ctxArr = contextResp;\nconst leadCtxRow = ctxArr[0] || {};\nconst leadContext = leadCtxRow.lead_context || {};\nconst stage = leadCtxRow.conversation_stage || 'new';\nconst companyName = leadCtxRow.company_name || '';\nconst decisionMaker = leadCtxRow.decision_maker_name || inbound.pushName || '';\n\nconst systemPrompt = promptRow?.system_prompt || 'Você é uma assistente comercial do Sondar+.';\nconst modelPrimary = promptRow?.model_primary || 'gemini-2.0-flash';\nconst temperature = promptRow?.temperature || 0.4;\nconst maxTokens = promptRow?.max_tokens || 300;\n\nconst historyChronological = history.slice().reverse();\nconst contextLines = historyChronological.map(m => {\n  const role = m.direction === 'outbound' ? 'Ana' : (decisionMaker || 'Cliente');\n  return role + ': ' + m.content;\n}).join('\\n');\n\nconst leadBrief = [\n  decisionMaker ? 'Nome: ' + decisionMaker : null,\n  companyName ? 'Empresa: ' + companyName : null,\n  leadCtxRow.city ? 'Cidade: ' + leadCtxRow.city : null,\n  'Stage: ' + stage,\n  leadContext.persona_fit != null ? 'Persona fit: ' + leadContext.persona_fit + '/100' : null,\n  leadContext.pain_points?.length ? 'Dores detectadas: ' + leadContext.pain_points.join('; ') : null,\n  leadContext.objections?.length ? 'Objeções: ' + leadContext.objections.join('; ') : null,\n  leadContext.signals ? 'Sinais: ' + JSON.stringify(leadContext.signals) : null,\n  leadContext.next_action ? 'Próxima ação sugerida: ' + leadContext.next_action : null,\n  leadContext.last_summary ? 'Resumo: ' + leadContext.last_summary : null,\n].filter(Boolean).join('\\n');\n\n// Tabela de planos direto do DB (fonte da verdade, nada hardcoded)\nlet planosTxt = '';\ntry {\n  const plans = plansResp?.planos || [];\n  planosTxt = plans.map(p => {\n    const limits = p.ilimitado\n      ? 'ilimitado'\n      : [\n          p.max_obras ? p.max_obras + ' obras' : null,\n          p.max_furos ? p.max_furos + ' furos' : null,\n          p.max_usuarios ? p.max_usuarios + ' usuários' : null,\n        ].filter(Boolean).join(' / ');\n    return '- ' + p.nome + ' (R$' + p.preco_brl + '/' + (p.billing || 'mensal') + '): ' + limits;\n  }).join('\\n');\n} catch(e) {}\n\n// Account status\nlet accountTxt = '';\ntry {\n  if (accountResp?.tem_conta) {\n    const c = accountResp.contas?.[0];\n    if (c) {\n      accountTxt = 'JÁ É CLIENTE: ' + c.empresa + ' (' + (c.cidade || '?') + ')';\n      if (c.plano) accountTxt += ', plano ' + c.plano.nome;\n      if (c.assinatura?.trial_ativo) accountTxt += ', trial ativo até ' + c.assinatura.trial_termina_em;\n    }\n  } else {\n    accountTxt = 'AINDA NÃO É CLIENTE (lead novo, sem cadastro no Sondar+)';\n  }\n} catch(e) {}\n\nconst userMessage = (decisionMaker || 'Cliente') + ' (' + inbound.phone + ') escreveu agora:\\n\\n' + inbound.text;\n\nconst parts = [];\nif (leadBrief) parts.push('PERFIL DO LEAD:\\n' + leadBrief);\nif (accountTxt) parts.push('STATUS DE CONTA:\\n' + accountTxt);\nif (planosTxt) parts.push('PLANOS ATIVOS (fonte oficial, use SEMPRE esses valores):\\n' + planosTxt);\nif (contextLines) parts.push('HISTÓRICO RECENTE DA CONVERSA:\\n' + contextLines);\nparts.push('NOVA MENSAGEM:\\n' + userMessage);\nconst fullContext = parts.join('\\n\\n---\\n\\n');\n\nreturn [{json: {\n  phone: inbound.phone,\n  pushName: decisionMaker,\n  messageId: inbound.messageId,\n  lead_id: leadCtxRow.id,\n  system_prompt: systemPrompt,\n  user_message: fullContext,\n  model: modelPrimary,\n  temperature,\n  max_tokens: maxTokens\n}}];"
       }
     },
     {
       "id": "gemini-call",
-      "name": "Gemini AI Response",
+      "name": "GPT-4o-mini Response",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -202,12 +221,30 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.model }}:generateContent?key={{ GEMINI_API_KEY }}",
+        "url": "https://api.openai.com/v1/chat/completions",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.user_message) }} }]\n  }],\n  \"systemInstruction\": {\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.system_prompt) }} }]\n  },\n  \"generationConfig\": {\n    \"temperature\": {{ $json.temperature }},\n    \"maxOutputTokens\": {{ $json.max_tokens }}\n  }\n}",
-        "options": {}
-      }
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": {{ JSON.stringify($json.system_prompt) }} },\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.user_message) }} }\n  ],\n  \"temperature\": {{ $json.temperature }},\n  \"max_tokens\": {{ $json.max_tokens }}\n}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
     },
     {
       "id": "extract-response",
@@ -220,7 +257,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const geminiResp = $input.first().json;\nconst inbound = $('Build Prompt + History').first().json;\n\nlet aiText = '';\ntry {\n  aiText = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n} catch (e) {}\n\n// Parse escalation marker: <<ESCALAR:reason:summary>>\nlet escalation = null;\nconst escMatch = aiText.match(/<<ESCALAR:([a-z_]+):([^>]+)>>/i);\nif (escMatch) {\n  escalation = {\n    reason: escMatch[1].toLowerCase(),\n    summary: escMatch[2].trim()\n  };\n  aiText = aiText.replace(escMatch[0], '').trim();\n}\n\n// Sanitize\naiText = aiText.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\naiText = aiText.replace(/<\\/?final>/gi, '').trim();\naiText = aiText.replace(/^Ana:\\s*/i, '').trim();\naiText = aiText.replace(/```[\\s\\S]*?```/g, '').trim();\n\nif (!aiText) aiText = 'Oi! Só um momento, já te respondo.';\n\nconst textLen = aiText.length;\nconst delay_ms = Math.min(Math.max(textLen * 60 + 800, 2000), 12000);\n\nreturn [{json: {\n  phone: inbound.phone,\n  messageId: inbound.messageId,\n  lead_id: inbound.lead_id,\n  ai_text: aiText,\n  delay_ms,\n  text_length: textLen,\n  delay_seconds: Math.floor(delay_ms / 1000),\n  escalation_reason: escalation?.reason || null,\n  escalation_summary: escalation?.summary || null,\n  should_escalate: escalation !== null\n}}];"
+        "jsCode": "const geminiResp = $input.first().json;\nconst inbound = $('Build Prompt + History').first().json;\n\nlet aiText = '';\ntry {\n  aiText = geminiResp?.choices?.[0]?.message?.content || geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n} catch (e) {}\n\n// Parse escalation marker: <<ESCALAR:reason:summary>>\nlet escalation = null;\nconst escMatch = aiText.match(/<<ESCALAR:([a-z_]+):([^>]+)>>/i);\nif (escMatch) {\n  escalation = {\n    reason: escMatch[1].toLowerCase(),\n    summary: escMatch[2].trim()\n  };\n  aiText = aiText.replace(escMatch[0], '').trim();\n}\n\n// Sanitize\naiText = aiText.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\naiText = aiText.replace(/<\\/?final>/gi, '').trim();\naiText = aiText.replace(/^Ana:\\s*/i, '').trim();\naiText = aiText.replace(/```[\\s\\S]*?```/g, '').trim();\n\n// Strip leaked context markers (Gemini sometimes copies input structure)\naiText = aiText.replace(/^(HISTÓRICO RECENTE[\\s\\S]*?---\\s*\\n?)/i, '');\naiText = aiText.replace(/^(PERFIL DO LEAD[\\s\\S]*?---\\s*\\n?)/i, '');\naiText = aiText.replace(/^(STATUS DE CONTA[\\s\\S]*?---\\s*\\n?)/i, '');\naiText = aiText.replace(/^(PLANOS ATIVOS[\\s\\S]*?---\\s*\\n?)/i, '');\naiText = aiText.replace(/^(NOVA MENSAGEM[\\s\\S]*?---\\s*\\n?)/i, '');\naiText = aiText.replace(/HISTÓRICO RECENTE DA CONVERSA:/gi, '');\naiText = aiText.replace(/PERFIL DO LEAD:/gi, '');\naiText = aiText.replace(/STATUS DE CONTA:/gi, '');\naiText = aiText.replace(/PLANOS ATIVOS[^:]*:/gi, '');\naiText = aiText.replace(/NOVA MENSAGEM:/gi, '');\naiText = aiText.replace(/Cliente:\\s/gi, '');\naiText = aiText.replace(/^\\s*---\\s*$/gm, '');\naiText = aiText.trim();\n\nif (!aiText) aiText = 'Oi! Só um momento, já te respondo.';\n\nconst textLen = aiText.length;\nconst delay_ms = Math.min(Math.max(textLen * 60 + 800, 2000), 12000);\n\n// Dedup: check recent outbound messages to avoid repeating\nconst allHistory = $('Get Conversation History').all().map(i => i.json);\nconst lastOutbound = allHistory.find(m => m.direction === 'outbound');\nif (lastOutbound && lastOutbound.content && aiText) {\n  const lastContent = lastOutbound.content.trim().slice(0, 100);\n  const newContent = aiText.trim().slice(0, 100);\n  if (lastContent === newContent) {\n    // Same content as last outbound, skip sending\n    return [];\n  }\n}\n\n// Detect PDF: either explicit marker OR Ana mentions sending guide/link\nlet shouldSendPdf = false;\nif (aiText.includes('<<ENVIAR_PDF>>')) {\n  shouldSendPdf = true;\n  aiText = aiText.replace(/<<ENVIAR_PDF>>/g, '').trim();\n} else if (\n  (aiText.toLowerCase().includes('guia') && aiText.toLowerCase().includes('mandar')) ||\n  (aiText.toLowerCase().includes('guia') && aiText.toLowerCase().includes('enviar')) ||\n  (aiText.includes('sondarmais.com.br') && (aiText.toLowerCase().includes('grátis') || aiText.toLowerCase().includes('conta')))\n) {\n  shouldSendPdf = true;\n}\n\nreturn [{json: {\n  phone: inbound.phone,\n  messageId: inbound.messageId,\n  lead_id: inbound.lead_id,\n  ai_text: aiText,\n  delay_ms,\n  text_length: textLen,\n  delay_seconds: Math.floor(delay_ms / 1000),\n  escalation_reason: escalation?.reason || null,\n  escalation_summary: escalation?.summary || null,\n  should_escalate: escalation !== null,\n  should_send_pdf: shouldSendPdf\n}}];"
       }
     },
     {
@@ -262,7 +299,7 @@
         "amount": "={{ $('Extract AI Response').first().json.delay_seconds }}",
         "unit": "seconds"
       },
-      "webhookId": "fab9c538-8f11-4994-b6c6-4650ef8fef5c"
+      "webhookId": "REPLACE_WITH_YOUR_UUID"
     },
     {
       "id": "send-msg",
@@ -305,7 +342,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Extract AI Response').first().json.ai_text) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"reply\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
-        "options": {}
+        "options": {},
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -390,7 +436,16 @@
         "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\",\n  \"reason\": \"{{ $('Extract AI Response').first().json.escalation_reason }}\",\n  \"summary\": {{ JSON.stringify($('Extract AI Response').first().json.escalation_summary) }}\n}",
         "options": {
           "timeout": 10000
-        }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -410,7 +465,16 @@
         "jsonBody": "={\n  \"phone\": \"{{ $('Extract AI Response').first().json.phone }}\"\n}",
         "options": {
           "timeout": 15000
-        }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -427,7 +491,16 @@
         "url": "{{ BACKEND_BASE_URL }}/api/agents/ana/tools/get-plans",
         "options": {
           "timeout": 8000
-        }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -447,7 +520,16 @@
         "jsonBody": "={\n  \"phone\": \"{{ $('Extract WhatsApp Data').first().json.phone }}\"\n}",
         "options": {
           "timeout": 8000
-        }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendHeaders": true
       }
     },
     {
@@ -541,10 +623,169 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"lead_id\": \"{{ ($('Find Lead For Queue').first().json[0] || {}).id }}\",\n  \"phone\": \"{{ $('Extract WhatsApp Data').first().json.phone }}\",\n  \"message_type\": \"reply_pending\",\n  \"content\": {{ JSON.stringify($('Extract WhatsApp Data').first().json.text) }},\n  \"scheduled_for\": \"{{ $('Compute Next Business 9h').first().json.scheduled_for }}\",\n  \"priority\": 4,\n  \"status\": \"pending\",\n  \"metadata\": {\n    \"inbound_message_id\": \"{{ $('Extract WhatsApp Data').first().json.messageId }}\",\n    \"pushName\": \"{{ $('Extract WhatsApp Data').first().json.pushName }}\",\n    \"received_at\": \"{{ $('Extract WhatsApp Data').first().json.timestamp }}\"\n  }\n}",
+        "jsonBody": "={\n  \"lead_id\": \"{{ ($('Find Lead For Queue').first().json || {}).id }}\",\n  \"phone\": \"{{ $('Extract WhatsApp Data').first().json.phone }}\",\n  \"message_type\": \"reply_pending\",\n  \"content\": {{ JSON.stringify($('Extract WhatsApp Data').first().json.text) }},\n  \"scheduled_for\": \"{{ $('Compute Next Business 9h').first().json.scheduled_for }}\",\n  \"priority\": 4,\n  \"status\": \"pending\",\n  \"metadata\": {\n    \"inbound_message_id\": \"{{ $('Extract WhatsApp Data').first().json.messageId }}\",\n    \"pushName\": \"{{ $('Extract WhatsApp Data').first().json.pushName }}\",\n    \"received_at\": \"{{ $('Extract WhatsApp Data').first().json.timestamp }}\"\n  }\n}",
         "options": {
           "timeout": 8000
         }
+      }
+    },
+    {
+      "id": "send-pdf",
+      "name": "Check PDF Flag",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const extract = $('Extract AI Response').first().json;\nif (!extract.should_send_pdf) return [];\nreturn [{ json: { phone: extract.phone } }];"
+      }
+    },
+    {
+      "id": "if-audio",
+      "name": "IF Audio",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "audio-check",
+              "leftValue": "={{ $json.isAudio }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "get-audio",
+      "name": "Get Audio Base64",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/chat/getBase64FromMediaMessage/{{ AGENT_ID }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ EVO_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {\n    \"key\": {\n      \"id\": \"{{ $json.messageId }}\",\n      \"remoteJid\": \"{{ $json.remoteJid }}\",\n      \"fromMe\": false\n    }\n  },\n  \"convertToMp4\": false\n}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "whisper-transcribe",
+      "name": "Whisper Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -140,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/agents/ana/tools/transcribe-audio",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"base64\": \"{{ $json.base64 }}\",\n  \"mimetype\": \"{{ $json.mimetype || 'audio/ogg' }}\"\n}",
+        "options": {
+          "timeout": 25000
+        }
+      }
+    },
+    {
+      "id": "send-pdf-http",
+      "name": "Send PDF HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2500,
+        -300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/message/sendMedia/{{ AGENT_ID }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ EVO_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.phone }}\",\n  \"mediatype\": \"document\",\n  \"media\": \"{{ SUPABASE_URL }}/storage/v1/object/public/public-assets/opensquad/Guia-de-Cadastro-Sondar-Plus.pdf\",\n  \"fileName\": \"Guia-de-Cadastro-Sondar-Plus.pdf\",\n  \"caption\": \"Guia de Cadastro Sondar+\"\n}",
+        "options": {
+          "timeout": 20000
+        }
+      }
+    },
+    {
+      "id": "merge-transcription",
+      "name": "Merge Transcription",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        -200
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const whisperResp = $input.first().json;\nconst extract = $('Extract WhatsApp Data').first().json;\nreturn [{json: {\n  ...extract,\n  text: whisperResp.text || '[audio não reconhecido]',\n  isAudio: false,\n  audioTranscribed: true\n}}];"
       }
     }
   ],
@@ -564,7 +805,7 @@
       "main": [
         [
           {
-            "node": "Business Hours Check",
+            "node": "IF Audio",
             "type": "main",
             "index": 0
           }
@@ -637,18 +878,7 @@
       "main": [
         [
           {
-            "node": "Gemini AI Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Gemini AI Response": {
-      "main": [
-        [
-          {
-            "node": "Extract AI Response",
+            "node": "GPT-4o-mini Response",
             "type": "main",
             "index": 0
           }
@@ -715,6 +945,11 @@
         [
           {
             "node": "IF Should Escalate",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check PDF Flag",
             "type": "main",
             "index": 0
           }
@@ -804,6 +1039,98 @@
           }
         ]
       ]
+    },
+    "Send PDF": {
+      "main": [
+        [
+          {
+            "node": "Log Outbound (Sondar+)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT-4o-mini Response": {
+      "main": [
+        [
+          {
+            "node": "Extract AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Audio": {
+      "main": [
+        [
+          {
+            "node": "Get Audio Base64",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Business Hours Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Audio Base64": {
+      "main": [
+        [
+          {
+            "node": "Whisper Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Whisper Transcribe": {
+      "main": [
+        [
+          {
+            "node": "Merge Transcription",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PDF Flag": {
+      "main": [
+        [
+          {
+            "node": "Send PDF HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Transcription": {
+      "main": [
+        [
+          {
+            "node": "Business Hours Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
   }
 }

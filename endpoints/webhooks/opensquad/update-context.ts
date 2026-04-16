@@ -1,11 +1,3 @@
-// ============================================================================
-// PORTABILIDADE: Este arquivo foi gerado como template do agent-attack-lead.
-// Para usar no seu Next.js:
-//   1. Copie para src/app/api/<path>/route.ts no seu projeto
-//   2. Substitua `@/lib/supabase-admin` pela sua função de DB
-//   3. Ajuste nomes de tabelas/colunas se usar schema diferente de opensquad_*
-// ============================================================================
-
 /**
  * POST /api/webhooks/opensquad/update-context
  *
@@ -27,12 +19,12 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/supabase-admin";
 import { normalizePhone } from "@/lib/opensquad/db";
+import { requireWebhookAuth } from "@/lib/opensquad/webhook-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SECRET = process.env.OPENCLAW_WEBHOOK_SECRET;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 type LeadContext = {
   persona_fit?: number;
@@ -74,8 +66,8 @@ async function callGeminiForContext(
   history: Array<{ direction: string; content: string }>,
   currentContext: LeadContext,
   currentStage: Stage,
-): Promise<{ context: LeadContext; stage: Stage; model: string } | null> {
-  if (!GEMINI_API_KEY) return null;
+): Promise<{ context: LeadContext; stage: Stage; model: string } | { error: string } | null> {
+  if (!OPENAI_API_KEY) return { error: "OPENAI_API_KEY not configured" };
 
   const historyText = history
     .slice()
@@ -106,36 +98,41 @@ Formato de resposta (JSON puro, sem markdown):
 ICP do Sondar+: escritórios/profissionais de sondagem geotécnica, engenharia civil, quem faz SPT/SPT-T/Trado. Usa Word hoje = sinal forte.`;
 
   const body = {
-    system_instruction: {
-      parts: [{ text: systemPrompt }],
-    },
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: `CONVERSA:\n${historyText}\n\nResponda apenas com o JSON.` }],
-      },
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: `CONVERSA:\n${historyText}\n\nResponda apenas com o JSON.` },
     ],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 500,
-      responseMimeType: "application/json",
-    },
+    temperature: 0.2,
+    max_tokens: 500,
+    response_format: { type: "json_object" },
   };
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[update-context] OpenAI fetch failed:", msg);
+    return { error: `openai_fetch_failed: ${msg}` };
+  }
 
   if (!res.ok) {
-    console.error("[update-context] Gemini error:", res.status, await res.text());
-    return null;
+    const errText = await res.text();
+    console.error("[update-context] OpenAI error:", res.status, errText);
+    return { error: `openai_${res.status}: ${errText.slice(0, 200)}` };
   }
 
   const data = await res.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+  const raw = data?.choices?.[0]?.message?.content || "{}";
   try {
     const parsed = JSON.parse(raw);
     const stage = VALID_STAGES.includes(parsed.stage)
@@ -144,22 +141,18 @@ ICP do Sondar+: escritórios/profissionais de sondagem geotécnica, engenharia c
     return {
       stage,
       context: { ...parsed.context, updated_at: new Date().toISOString() },
-      model: "gemini-2.0-flash",
+      model: "gpt-4o-mini",
     };
   } catch (e) {
     console.error("[update-context] Parse error:", e, "raw:", raw);
-    return null;
+    return { error: `gemini_parse_error: ${raw.slice(0, 200)}` };
   }
 }
 
 export const POST = async (req: Request) => {
   try {
-    if (SECRET) {
-      const provided = req.headers.get("x-webhook-secret");
-      if (provided !== SECRET) {
-        return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-      }
-    }
+    const authErr = requireWebhookAuth(req);
+    if (authErr) return authErr;
 
     const body = await req.json();
     const { phone } = body as { phone?: string };
@@ -200,7 +193,10 @@ export const POST = async (req: Request) => {
     // Chama Gemini pra atualizar contexto
     const result = await callGeminiForContext(messages, currentContext, currentStage);
     if (!result) {
-      return NextResponse.json({ error: "falha ao gerar contexto" }, { status: 500 });
+      return NextResponse.json({ error: "falha ao gerar contexto: null result" }, { status: 500 });
+    }
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: 502 });
     }
 
     // Persiste no lead

@@ -1,11 +1,3 @@
-// ============================================================================
-// PORTABILIDADE: Este arquivo foi gerado como template do agent-attack-lead.
-// Para usar no seu Next.js:
-//   1. Copie para src/app/api/<path>/route.ts no seu projeto
-//   2. Substitua `@/lib/supabase-admin` pela sua função de DB
-//   3. Ajuste nomes de tabelas/colunas se usar schema diferente de opensquad_*
-// ============================================================================
-
 /**
  * POST /api/webhooks/opensquad/sync-message
  *
@@ -107,13 +99,32 @@ export const POST = async (req: Request) => {
       );
     }
 
+    if (!["inbound", "outbound"].includes(direction)) {
+      return NextResponse.json(
+        { error: "direction deve ser 'inbound' ou 'outbound'" },
+        { status: 400 },
+      );
+    }
+
     const variants = phoneVariants(phone);
+
+    // 0. Blacklist check (LGPD)
+    const { data: blacklisted } = await adminDb()
+      .rpc("opensquad_is_blacklisted", { p_phone: normalizePhone(phone) ?? phone })
+      .maybeSingle();
+    if (blacklisted === true) {
+      return NextResponse.json(
+        { error: "phone is blacklisted (LGPD)", skipped: "blacklisted" },
+        { status: 200 },
+      );
+    }
 
     // 1. Busca lead existente (tenta todas as variantes de phone)
     const { data: existingLeads } = await adminDb()
       .from("opensquad_leads")
       .select("*")
       .in("phone", variants)
+      .order("created_at", { ascending: false })
       .limit(1);
 
     let lead: OpenSquadLead;

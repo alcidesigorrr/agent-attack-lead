@@ -1,207 +1,629 @@
 {
-  "name": "Ana — Dispatcher Outbound",
-  "settings": {
-    "executionOrder": "v1",
-    "timezone": "America/Sao_Paulo",
-    "saveExecutionProgress": false,
-    "saveManualExecutions": true
-  },
+  "name": "Ana — Dispatcher Outbound v2",
   "nodes": [
     {
-      "id": "schedule-morning",
+      "id": "schedule",
       "name": "Schedule 9h/11h/15h",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [-800, 0],
+      "position": [
+        -800,
+        0
+      ],
       "parameters": {
         "rule": {
           "interval": [
-            {"field": "cronExpression", "expression": "0 9,11,15 * * 1-5"}
+            {
+              "field": "cronExpression",
+              "expression": "0 9-18 * * 1-5"
+            }
           ]
         }
       }
     },
     {
-      "id": "business-hours-guard",
-      "name": "Business Hours Guard",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-560, 0],
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const now = new Date();\nconst fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short', hour: '2-digit', hour12: false });\nconst parts = fmt.formatToParts(now);\nconst weekday = parts.find(p => p.type === 'weekday')?.value || '';\nconst hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');\nconst isWeekday = !['Sat', 'Sun'].includes(weekday);\nconst isBusinessHour = hour >= 8 && hour < 18;\n\nif (!(isWeekday && isBusinessHour)) {\n  console.log('Fora horário, skip dispatcher');\n  return [];\n}\n\nreturn [{ json: { ok: true, now: now.toISOString() } }];"
-      }
-    },
-    {
-      "id": "fetch-new-leads",
-      "name": "Fetch Leads (status=discovered)",
+      "id": "fetch-leads",
+      "name": "Fetch Leads (discovered)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-320, 0],
+      "position": [
+        -560,
+        0
+      ],
       "parameters": {
         "method": "GET",
-        "url": "{{ SUPABASE_URL }}/rest/v1/opensquad_leads?select=id,phone,company_name,city,state,decision_maker_name,segment&status=eq.discovered&phone=not.is.null&order=created_at.asc&limit=15",
+        "url": "{{ SUPABASE_URL }}/rest/v1/opensquad_leads?select=id,phone,company_name,city,state,decision_maker_name,segment&status=eq.discovered&phone=not.is.null&order=created_at.asc&limit=3",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
-            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
-            {"name": "Accept-Profile", "value": "public"}
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
           ]
         },
-        "options": {}
+        "options": {
+          "timeout": 10000
+        }
       }
     },
     {
-      "id": "split-batches",
+      "id": "split",
       "name": "Split In Batches",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [-80, 0],
+      "position": [
+        -320,
+        0
+      ],
       "parameters": {
         "batchSize": 1,
         "options": {}
       }
     },
     {
-      "id": "build-first-contact",
-      "name": "Build First Contact",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [160, 0],
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const lead = $input.first().json;\nconst name = lead.decision_maker_name || lead.company_name || '';\nconst city = lead.city || '';\n\nconst variants = [\n  `Oi${name ? ', ' + name : ''}! Tudo bem?`,\n  `Olá${name ? ' ' + name : ''}! Tudo bem?`,\n  `Oi! Tudo bem por aí?`\n];\nconst msg1 = variants[Math.floor(Math.random() * variants.length)];\nconst msg2Variants = [\n  `Aqui é a Ana, do Sondar+. Vi que vocês trabalham em ${city || 'sondagem'} e queria te apresentar a plataforma.`,\n  `Me chamo Ana, sou do Sondar+. Estamos liberando testes da plataforma pra escritórios da área.`,\n  `Aqui é a Ana, do Sondar+. Queria te contar sobre uma plataforma nova de relatórios de sondagem.`\n];\nconst msg2 = msg2Variants[Math.floor(Math.random() * msg2Variants.length)];\n\nreturn [{\n  json: {\n    lead_id: lead.id,\n    phone: lead.phone,\n    company_name: lead.company_name,\n    name_first_part: name,\n    city,\n    msg1,\n    msg2,\n    delay_between_ms: Math.floor(Math.random() * 6000) + 5000\n  }\n}];"
-      }
-    },
-    {
-      "id": "send-msg-1",
-      "name": "Send MSG 1",
+      "id": "claim-lead",
+      "name": "Claim Lead",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [400, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"number\": \"{{ $json.phone }}\",\n  \"text\": {{ JSON.stringify($json.msg1) }},\n  \"delay\": 2000\n}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "options": {}
-      },
-      "credentials": {
-        "httpHeaderAuth": {"id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID", "name": "Evolution API - Sondar Ana"}
-      }
-    },
-    {
-      "id": "log-msg-1",
-      "name": "Log MSG 1 (Sondar+)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [640, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"phone\": \"{{ $('Build First Contact').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Build First Contact').first().json.msg1) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"first_contact\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
-        "options": {}
-      }
-    },
-    {
-      "id": "wait-between-msgs",
-      "name": "Wait Between MSGs",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [880, 0],
-      "parameters": {
-        "amount": "={{ Math.floor($('Build First Contact').first().json.delay_between_ms / 1000) }}",
-        "unit": "seconds"
-      }
-    },
-    {
-      "id": "send-msg-2",
-      "name": "Send MSG 2",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1120, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"number\": \"{{ $('Build First Contact').first().json.phone }}\",\n  \"text\": {{ JSON.stringify($('Build First Contact').first().json.msg2) }},\n  \"delay\": 3000\n}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "options": {}
-      },
-      "credentials": {
-        "httpHeaderAuth": {"id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID", "name": "Evolution API - Sondar Ana"}
-      }
-    },
-    {
-      "id": "log-msg-2",
-      "name": "Log MSG 2 (Sondar+)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1360, 0],
-      "parameters": {
-        "method": "POST",
-        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"phone\": \"{{ $('Build First Contact').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Build First Contact').first().json.msg2) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"first_contact\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
-        "options": {}
-      }
-    },
-    {
-      "id": "update-lead-status",
-      "name": "Update Lead Status",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1600, 0],
+      "position": [
+        -80,
+        0
+      ],
       "parameters": {
         "method": "PATCH",
-        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_leads?id=eq.{{ $('Build First Contact').first().json.lead_id }}",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_leads?id=eq.{{ $json.id }}&status=eq.discovered",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            {"name": "apikey", "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"},
-            {"name": "Authorization", "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"},
-            {"name": "Content-Profile", "value": "public"}
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            },
+            {
+              "name": "Content-Profile",
+              "value": "public"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=headers-only"
+            }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"status\": \"contacted\",\n  \"first_contact_at\": \"{{ $now.toISO() }}\",\n  \"last_contact_at\": \"{{ $now.toISO() }}\"\n}",
-        "options": {}
+        "options": {
+          "timeout": 8000
+        }
       }
     },
     {
-      "id": "wait-between-leads",
-      "name": "Wait Between Leads (30-60s)",
+      "id": "build-msg1",
+      "name": "Build MSG1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const lead = $('Split In Batches').first().json;\nconst hour = new Date().toLocaleTimeString('pt-BR', {timeZone:'America/Sao_Paulo', hour:'2-digit', hour12:false});\nconst h = parseInt(hour);\nconst greeting = h < 12 ? 'bom dia' : (h < 18 ? 'boa tarde' : 'boa noite');\n\nconst variants = [\n  `Oi, ${greeting}!`,\n  `Olá, ${greeting}!`,\n  `Oi, ${greeting}!`,\n];\nconst msg1 = variants[Math.floor(Math.random() * variants.length)];\n\nreturn [{json: {\n  lead_id: lead.id,\n  phone: lead.phone,\n  company_name: lead.company_name,\n  city: lead.city,\n  decision_maker_name: lead.decision_maker_name,\n  msg1,\n  delay_ms: Math.floor(Math.random() * 3000) + 2000\n}}];"
+      }
+    },
+    {
+      "id": "send-typing-1",
+      "name": "Send Typing 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/chat/sendPresence/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.phone }}\",\n  \"presence\": \"composing\",\n  \"delay\": 8000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "wait-typing-1",
+      "name": "Wait Typing 1",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1840, 0],
+      "position": [
+        640,
+        0
+      ],
       "parameters": {
-        "amount": "={{ Math.floor(Math.random() * 30) + 30 }}",
+        "amount": "={{ Math.floor($('Build MSG1').first().json.delay_ms / 1000) }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "send-msg1",
+      "name": "Send MSG1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Build MSG1').first().json.phone }}\",\n  \"text\": {{ JSON.stringify($('Build MSG1').first().json.msg1) }},\n  \"delay\": 1000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "log-msg1",
+      "name": "Log MSG1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Build MSG1').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": {{ JSON.stringify($('Build MSG1').first().json.msg1) }},\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"cold_ping\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "wait-5min",
+      "name": "Wait 5 min",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1360,
+        0
+      ],
+      "parameters": {
+        "amount": 5,
+        "unit": "minutes"
+      }
+    },
+    {
+      "id": "check-replied",
+      "name": "Check If Replied",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ SUPABASE_URL }}/rest/v1/opensquad_messages?select=id&lead_id=eq.{{ $('Build MSG1').first().json.lead_id }}&direction=eq.inbound&created_at=gte.{{ new Date(Date.now() - 6*60*1000).toISOString() }}&limit=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "{{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Accept-Profile",
+              "value": "public"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 8000
+        }
+      }
+    },
+    {
+      "id": "if-replied",
+      "name": "IF Replied",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "replied-check",
+              "leftValue": "={{ Array.isArray($json) ? $json.length : ($json?.id ? 1 : 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "send-typing-2",
+      "name": "Send Typing 2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2080,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/chat/sendPresence/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Build MSG1').first().json.phone }}\",\n  \"presence\": \"composing\",\n  \"delay\": 10000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "wait-typing-2",
+      "name": "Wait Typing 2",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2320,
+        -100
+      ],
+      "parameters": {
+        "amount": "={{ Math.floor(Math.random() * 3) + 3 }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "send-msg2",
+      "name": "Send MSG2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://evolution:8080/message/sendText/{{ AGENT_ID }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Build MSG1').first().json.phone }}\",\n  \"text\": \"Tudo bem? Gostaria de tirar uma dúvida\",\n  \"delay\": 1000\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_EVOLUTION_CREDENTIAL_ID",
+          "name": "Evolution API - Sondar Ana"
+        }
+      }
+    },
+    {
+      "id": "log-msg2",
+      "name": "Log MSG2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{ BACKEND_BASE_URL }}/api/webhooks/opensquad/sync-message",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-webhook-secret",
+              "value": "{{ WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $('Build MSG1').first().json.phone }}\",\n  \"direction\": \"outbound\",\n  \"content\": \"Tudo bem? Gostaria de tirar uma dúvida\",\n  \"channel\": \"whatsapp\",\n  \"message_type\": \"cold_followup\",\n  \"sent_at\": \"{{ $now.toISO() }}\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "wait-between",
+      "name": "Wait 40-80s Between Leads",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3040,
+        0
+      ],
+      "parameters": {
+        "amount": "={{ Math.floor(Math.random() * 40) + 40 }}",
         "unit": "seconds"
       }
     }
   ],
   "connections": {
-    "Schedule 9h/11h/15h": {"main": [[{"node": "Business Hours Guard", "type": "main", "index": 0}]]},
-    "Business Hours Guard": {"main": [[{"node": "Fetch Leads (status=discovered)", "type": "main", "index": 0}]]},
-    "Fetch Leads (status=discovered)": {"main": [[{"node": "Split In Batches", "type": "main", "index": 0}]]},
-    "Split In Batches": {"main": [[{"node": "Build First Contact", "type": "main", "index": 0}]]},
-    "Build First Contact": {"main": [[{"node": "Send MSG 1", "type": "main", "index": 0}]]},
-    "Send MSG 1": {"main": [[{"node": "Log MSG 1 (Sondar+)", "type": "main", "index": 0}]]},
-    "Log MSG 1 (Sondar+)": {"main": [[{"node": "Wait Between MSGs", "type": "main", "index": 0}]]},
-    "Wait Between MSGs": {"main": [[{"node": "Send MSG 2", "type": "main", "index": 0}]]},
-    "Send MSG 2": {"main": [[{"node": "Log MSG 2 (Sondar+)", "type": "main", "index": 0}]]},
-    "Log MSG 2 (Sondar+)": {"main": [[{"node": "Update Lead Status", "type": "main", "index": 0}]]},
-    "Update Lead Status": {"main": [[{"node": "Wait Between Leads (30-60s)", "type": "main", "index": 0}]]},
-    "Wait Between Leads (30-60s)": {"main": [[{"node": "Split In Batches", "type": "main", "index": 0}]]}
+    "Schedule 9h/11h/15h": {
+      "main": [
+        [
+          {
+            "node": "Fetch Leads (discovered)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Leads (discovered)": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Claim Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Lead": {
+      "main": [
+        [
+          {
+            "node": "Build MSG1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build MSG1": {
+      "main": [
+        [
+          {
+            "node": "Send Typing 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Typing 1": {
+      "main": [
+        [
+          {
+            "node": "Wait Typing 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Typing 1": {
+      "main": [
+        [
+          {
+            "node": "Send MSG1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send MSG1": {
+      "main": [
+        [
+          {
+            "node": "Log MSG1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log MSG1": {
+      "main": [
+        [
+          {
+            "node": "Wait 5 min",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5 min": {
+      "main": [
+        [
+          {
+            "node": "Check If Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Replied": {
+      "main": [
+        [
+          {
+            "node": "IF Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Replied": {
+      "main": [
+        [
+          {
+            "node": "Send Typing 2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 40-80s Between Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Typing 2": {
+      "main": [
+        [
+          {
+            "node": "Wait Typing 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Typing 2": {
+      "main": [
+        [
+          {
+            "node": "Send MSG2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send MSG2": {
+      "main": [
+        [
+          {
+            "node": "Log MSG2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log MSG2": {
+      "main": [
+        [
+          {
+            "node": "Wait 40-80s Between Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 40-80s Between Leads": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": true
   }
 }
